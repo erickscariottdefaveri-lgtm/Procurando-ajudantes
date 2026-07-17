@@ -3,13 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistema de Candidaturas</title>
+    <title>Sistema de Candidaturas - Compartilhado</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loader { width: 20px; height: 20px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
     <!-- Notificação de Permissão -->
-    <div id="notif-perm" class="fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-xl shadow-lg z-50 hidden max-w-sm">
+    <div id="notif-perm" class="fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-xl shadow-lg z-50 hidden max-w-sm fade-in">
         <div class="flex items-center gap-3">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
@@ -33,12 +39,25 @@
         </div>
     </div>
 
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div class="bg-white rounded-2xl p-8 text-center shadow-2xl">
+            <div class="loader border-gray-300 border-t-indigo-600 w-12 h-12 mb-4"></div>
+            <p class="text-gray-700 font-semibold">Sincronizando dados...</p>
+            <p class="text-sm text-gray-500 mt-1">Aguarde um momento</p>
+        </div>
+    </div>
+
     <!-- PÁGINA PÚBLICA -->
     <div id="public-page" class="max-w-2xl mx-auto p-6">
         <div class="bg-white rounded-2xl shadow-xl overflow-hidden">
             <div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-8 text-white text-center">
                 <h1 class="text-3xl font-bold mb-2">📋 Sistema de Candidaturas</h1>
                 <p class="text-indigo-100">Envie sua mensagem e área de atuação</p>
+                <div class="mt-3 flex items-center justify-center gap-2">
+                    <span class="bg-white/20 px-3 py-1 rounded-full text-xs">💾 Salvo na nuvem</span>
+                    <span class="bg-white/20 px-3 py-1 rounded-full text-xs">🌐 Acesso global</span>
+                </div>
             </div>
             
             <div class="p-8">
@@ -141,6 +160,9 @@
                     <p class="text-gray-400 text-sm">Gerencie as candidaturas recebidas</p>
                 </div>
                 <div class="flex items-center gap-4">
+                    <button onclick="syncData()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                        <span id="sync-icon">🔄</span> Sincronizar
+                    </button>
                     <span id="pending-count" class="bg-red-500 text-white px-3 py-1 rounded-full text-sm font-bold">0 pendentes</span>
                     <button onclick="logoutAdmin()" class="text-gray-300 hover:text-white text-sm">Sair</button>
                 </div>
@@ -182,11 +204,106 @@
     </div>
 
     <script>
-        // ==================== DADOS ====================
-        let candidates = JSON.parse(localStorage.getItem('candidates')) || [];
+        // ==================== CONFIGURAÇÃO DO BACKEND NA NUVEM ====================
+        // JSONStorage.net - API gratuita, sem conta necessária
+        // Os dados ficam salvos em: https://api.jsonstorage.net/v1/json/00000000-0000-0000-0000-000000000000/8a0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b
+        const STORAGE_URL = 'https://api.jsonstorage.net/v1/json/00000000-0000-0000-0000-000000000000/8a0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b';
+        
+        // Dados em memória
+        let candidates = [];
         let currentUser = JSON.parse(localStorage.getItem('currentUser')) || null;
         let currentResponseId = null;
         let currentAction = null;
+        let isSyncing = false;
+
+        // ==================== FUNÇÕES DE BACKEND (NUVEM) ====================
+        
+        async function loadFromCloud() {
+            try {
+                const response = await fetch(STORAGE_URL, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.status === 404) {
+                    // Primeira vez - cria o bin vazio
+                    candidates = [];
+                    await saveToCloud();
+                    return;
+                }
+                
+                if (!response.ok) throw new Error('Erro ao carregar');
+                
+                const data = await response.json();
+                candidates = data.candidates || [];
+            } catch (error) {
+                console.error('Erro ao carregar da nuvem:', error);
+                // Fallback para localStorage
+                candidates = JSON.parse(localStorage.getItem('candidates_backup')) || [];
+                showToast('Aviso', 'Usando dados locais (modo offline)', 'info');
+            }
+        }
+
+        async function saveToCloud() {
+            try {
+                const response = await fetch(STORAGE_URL, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ candidates: candidates })
+                });
+                
+                if (!response.ok) throw new Error('Erro ao salvar');
+                
+                // Backup local também
+                localStorage.setItem('candidates_backup', JSON.stringify(candidates));
+                return true;
+            } catch (error) {
+                console.error('Erro ao salvar na nuvem:', error);
+                // Salva localmente como backup
+                localStorage.setItem('candidates_backup', JSON.stringify(candidates));
+                showToast('Aviso', 'Dados salvos localmente (falha na nuvem)', 'info');
+                return false;
+            }
+        }
+
+        async function syncData() {
+            if (isSyncing) return;
+            isSyncing = true;
+            
+            const overlay = document.getElementById('loading-overlay');
+            overlay.classList.remove('hidden');
+            
+            try {
+                await loadFromCloud();
+                renderAdminLists();
+                checkUserStatus();
+                showToast('Sincronizado!', 'Dados atualizados da nuvem', 'success');
+            } catch (error) {
+                showToast('Erro', 'Não foi possível sincronizar', 'error');
+            } finally {
+                isSyncing = false;
+                overlay.classList.add('hidden');
+            }
+        }
+
+        // Sincronização automática a cada 30 segundos no painel ADM
+        let autoSyncInterval = null;
+
+        function startAutoSync() {
+            if (autoSyncInterval) clearInterval(autoSyncInterval);
+            autoSyncInterval = setInterval(async () => {
+                if (document.getElementById('admin-page').classList.contains('hidden')) return;
+                await loadFromCloud();
+                renderAdminLists();
+            }, 30000);
+        }
+
+        function stopAutoSync() {
+            if (autoSyncInterval) {
+                clearInterval(autoSyncInterval);
+                autoSyncInterval = null;
+            }
+        }
 
         // ==================== NOTIFICAÇÕES ====================
         function requestNotification() {
@@ -238,7 +355,10 @@
         }
 
         // ==================== INICIALIZAÇÃO ====================
-        window.onload = function() {
+        window.onload = async function() {
+            // Carrega dados da nuvem
+            await loadFromCloud();
+            
             setTimeout(() => {
                 if ('Notification' in window && Notification.permission === 'default') {
                     document.getElementById('notif-perm').classList.remove('hidden');
@@ -295,7 +415,7 @@
         }
 
         // ==================== FORMULÁRIO ====================
-        function submitForm(e) {
+        async function submitForm(e) {
             e.preventDefault();
             
             const nome = document.getElementById('nome').value.trim();
@@ -320,7 +440,7 @@
                     candidate.edited = true;
                     candidate.lastSent = now;
                     
-                    saveData();
+                    await saveToCloud();
                     showToast('Mensagem Editada!', 'Sua candidatura foi atualizada com sucesso.', 'success');
                     checkUserStatus();
                     return;
@@ -343,7 +463,7 @@
             candidates.push(newCandidate);
             currentUser = { id: newCandidate.id };
             
-            saveData();
+            await saveToCloud();
             showToast('Candidatura Enviada!', 'Aguarde a resposta do administrador.', 'success');
             
             document.getElementById('candidate-form').reset();
@@ -379,6 +499,7 @@
                 document.getElementById('public-page').classList.add('hidden');
                 document.getElementById('admin-page').classList.remove('hidden');
                 renderAdminLists();
+                startAutoSync();
                 showToast('Bem-vindo!', 'Acesso administrativo concedido.', 'success');
             } else {
                 showToast('Código Inválido!', 'Tente novamente.', 'error');
@@ -388,6 +509,7 @@
         function logoutAdmin() {
             document.getElementById('admin-page').classList.add('hidden');
             document.getElementById('public-page').classList.remove('hidden');
+            stopAutoSync();
         }
 
         function switchTab(tab) {
@@ -430,7 +552,7 @@
             }
             
             container.innerHTML = list.map(c => `
-                <div class="bg-gray-50 rounded-xl p-5 border border-gray-100 hover:shadow-md transition-shadow">
+                <div class="bg-gray-50 rounded-xl p-5 border border-gray-100 hover:shadow-md transition-shadow fade-in">
                     <div class="flex items-start justify-between mb-3">
                         <div>
                             <h4 class="font-bold text-gray-800 text-lg">${c.nome}</h4>
@@ -495,7 +617,7 @@
             currentAction = null;
         }
 
-        function sendResponse() {
+        async function sendResponse() {
             const text = document.getElementById('response-textarea').value.trim();
             if (!text) {
                 showToast('Erro!', 'Digite uma resposta.', 'error');
@@ -516,7 +638,7 @@
                 showToast('Resposta Enviada!', `Resposta enviada para ${candidate.nome}.`, 'success');
             }
             
-            saveData();
+            await saveToCloud();
             closeResponseModal();
             renderAdminLists();
             
@@ -527,19 +649,18 @@
             );
         }
 
-        function resetToPending(id) {
+        async function resetToPending(id) {
             const candidate = candidates.find(c => c.id === id);
             candidate.status = 'pending';
             candidate.adminResponse = null;
             candidate.responseDate = null;
-            saveData();
+            await saveToCloud();
             renderAdminLists();
             showToast('Restaurado!', 'Candidatura movida para pendentes.', 'success');
         }
 
-        // ==================== UTILIDADES ====================
-        function saveData() {
-            localStorage.setItem('candidates', JSON.stringify(candidates));
+        // Salva o currentUser localmente
+        function saveCurrentUser() {
             localStorage.setItem('currentUser', JSON.stringify(currentUser));
         }
     </script>
